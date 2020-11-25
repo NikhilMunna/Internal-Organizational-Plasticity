@@ -12,23 +12,29 @@ globals [
   psi5
 
   alpha ;; GLOBAL PENALTY PARAMETER USED IN CALCULATION OF TASK WORKLOAD
+  ;; AVERAGE TEAM SIZE OVERTIME
+  avg-team-size
 ]
 
 ;; BREEDS DECLERATION
 breed [ employees employee ]
 breed [ tasks task ]
+breed [ resources resource ]
 
 ;; BREEDS VARIABLES DECLERATION
 employees-own [
   ;;
+  #days-worked
   tasks-assigned
-  tasks-dealt-with
+  tasks-dw ;; NUMBER OF TASKS DEALT WITH (AS A TEAM FOR TEAM MANAGER)
   tasks-solved
   role
   following
   team?
-  work-id
+  task-id
+  #teams-formed
   ;;
+  opportunity
   commitment
   performance
   ;; PERSONAL ATTRIBUTES
@@ -61,6 +67,10 @@ tasks-own [
   task-wl
   team-c
 ]
+resources-own [
+  dimension ;; DECIDES WHO CAN USE THIS RESOURCE (1-INDIVIDUAL, 2-SMALL TEAM, 3-BIG TEAM)
+            ;; SMALL TEAM - LESS THAN avg-team-size || BIG TEAM - GREATER THAN abg-team-size
+]
 
 ;; MAIN SETUP FUNCTION
 to setup
@@ -69,6 +79,7 @@ to setup
   setup-plots
   setup-global
   setup-employees
+  setup-resources
 
 end
 
@@ -94,8 +105,8 @@ to setup-employees
     setxy random-xcor random-ycor
     set color yellow
     set size 1
-    set breed employees
     set shape "person"
+    set #days-worked 0
     set behaviour random-normal 0 0.08
     set resign-prob 0
     set fire-prob random-float 0.1
@@ -105,12 +116,13 @@ to setup-employees
     set commitment random-normal 2.729932 0.711561
     set performance random-normal 3.153741 0.360824
     set role 0 ;; REPRESENTS EMPLOYEE
-    set team? 1
+    set team? true
     set tasks-assigned 0
-    set tasks-dealt-with 0
+    set tasks-dw 0
     set tasks-solved 0
     set missed-resources 0
-    set work-id -1
+    set task-id -1
+    set #teams-formed 0
     ;; MOTIVE PROFILE DISTRIBUTION
     ifelse random-float 1 < gamma1 [ set s1 2.0 ] [ set s1 1.0 ]
     ifelse random-float 1 < gamma2 [ set s2 2.0 ] [ set s2 1.0 ]
@@ -142,8 +154,8 @@ to setup-employees
   create-employees #team-managers [
     set color white
     set size 1
-    set breed employees
     set shape "person"
+    set #days-worked 0
     set behaviour random-normal 0.08 0.08
     set resign-prob 0
     set fire-prob random-float 0.1
@@ -153,12 +165,13 @@ to setup-employees
     set commitment random-normal (comt-emp-m + comt-emp-s) comt-emp-s
     set performance random-normal (perf-emp-m + perf-emp-s) perf-emp-s
     set role 1 ;; REPRESENTS TEAM MANAGER
-    set team? 1
+    set team? true
     set tasks-assigned 0
-    set tasks-dealt-with 0
+    set tasks-dw 0
     set tasks-solved 0
     set missed-resources 0
-    set work-id -1
+    set task-id -1
+    set #teams-formed 0
     ;; MOTIVE PROFILE DISTRIBUTION
     set s1 2.0
     set s2 2.0
@@ -190,17 +203,50 @@ to setup-employees
   ]
 end
 
+;; SETTING UP RESOURCES IN THE ENVIRONMENT
+to setup-resources
+  ;;
+  ;; RESOURCES FOR TEAM WITH TEAM SIZE LESS THAN avg-team-size
+  create-resources #team-managers / 2 [
+    setxy random-xcor random-ycor
+    set shape "pentagon"
+    set color green
+    set size 0.5
+    set dimension 2
+  ]
+  ;;
+  ;; RESOURCES FOR TEAM WITH TEAM SIZE GREATER THAN avg-team-size
+  create-resources #team-managers - count resources [
+    setxy random-xcor random-ycor
+    set shape "pentagon"
+    set color green
+    set size 0.5
+    set dimension 3
+  ]
+  ;;
+  ;; RESOURCES FOR INDIVIDUALS
+  create-resources #employees - (#team-managers * 11) [
+    setxy random-xcor random-ycor
+    set shape "pentagon"
+    set color green
+    set size 0.5
+    set dimension 1
+  ]
+end
+
 ;; SETTING UP A SINGLE TASK
-to-report setup-task
+to-report setup-task [_team?]
   let _task nobody
   create-tasks 1 [
     set shape "square 2"
     set color red
     set size 0.5
-    set difficulty (random 100) + 1
+    ifelse _team? [set difficulty (random 100) + 1] ;; FOR TEAM
+    [set difficulty (random 33) + 1] ;; FOR INDIVIDUAL
     set t-s 0
     set t-l 0
-    set #w-n min-team-size + ([difficulty] of self / 10)
+    ifelse _team? [set #w-n min-team-size + ([difficulty] of self / 10)] ;; FOR TEAM
+    [set #w-n 1] ;; FOR INDIVIDUAL
     set p1 (100 - [difficulty] of self) / 100 ;; TASK'S PROBABILITY OF SUCCESS BASED ON THE DIFFICULTY VALUE
     set task-wl [difficulty] of self * (exp alpha * [t-l] of self)
     set team-c 0
@@ -213,29 +259,45 @@ end
 to go
   ;; CREATION AND ASSIGNING OF TEAM TASKS
   create-assign-team-tasks
+  ;; CREATION AND ASSIGNING OF INDIVIDUAL TASKS
+  create-assign-ind-tasks
+  ;; CALCULATE AVERAGE TEAM SIZE AT EACH TIME STEP
+  calc-avg-team-size
+  ;; ALLOCATION OF APPROPRIATE RESOURCES TO THE TASKS
+  allocate-resources
   ;; UPDATING TASKS AND EMPLOYEES ATTRIBUTES AT EACH TIME STEP
   update-tasks
   ;; PLOT ALL NEXESSARY VALUES
   plots
 
   tick
+
+  ;; FUNCTIONS TO BE RUN AFTER EVERY TICK
+  ;; UPDATING DAYS OF WORKED OF ALL EMPLOYEES
+  update#days-worked
+  ;; UPDATING OPPORTUNITY OF EVERY EMPLOYEE
+  calc-opportunity
 end
 
 ;; TEAM MANAGERS SELECTING THEIR TEAMS
 to-report tm-select-teams [tm _task]
   let team nobody
-  if (count employees with [role = 0 and count (my-links with [color = white]) = 0]) >= ([#w-n] of _task) [
+  if (count employees with [role = 0 and team?]) >= ([#w-n] of _task) [
     ask tm [
-      set team n-of ([#w-n] of _task) employees with [role = 0 and count (my-links with [color = white]) = 0]
+      set team n-of ([#w-n] of _task) employees with [role = 0 and team?]
       let x [xcor] of self
       let y [ycor] of self
+      create-links-with team [ set color white ]
+      set team? false
       ask team [
         setxy (x + 2 * (sin random 360)) (y + 2 * (cos random 360))
         ;; ASSIGN THE TASK
         create-link-with _task [ set color yellow ] ;; LINK COLOR FOR EMPLOYEE TO TASK IS YELLOW (45)
-        set work-id [who] of _task
+        set task-id [who] of _task
+        set #teams-formed #teams-formed + 1
+        set tasks-dw [tasks-dw] of self + 1
       ]
-      create-links-with team [ set color white ]
+      set #teams-formed #teams-formed + 1
     ]
   ]
   report team
@@ -244,25 +306,29 @@ end
 ;; CREATION AND ASSIGNING OF TASKS
 to create-assign-team-tasks
   let loop? true
-  let #tasks count employees with [role = 1 and work-id = -1]
+  let #tasks count employees with [role = 1 and task-id = -1]
   while [loop? and #tasks != 0] [
-    let tm one-of employees with [role = 1 and work-id = -1]
+    let tm one-of employees with [role = 1 and task-id = -1]
     ;; ASSIGN TASK TO THE TEAM MANAGER
     ;; SET POSITION OF THE TASK NEAR THE TEAM
     let x [xcor] of tm
     let y [ycor] of tm
-    ask setup-task [
+    ask (setup-task true) [
       let team tm-select-teams tm self
       ifelse team != nobody [
-        setxy (x + 1 * (sin random 360)) (y + 1 * (cos random 360))
         create-link-with tm [ set color yellow ]
+        setxy (x + 1 * (sin random 360)) (y + 1 * (cos random 360))
 
-        let work# [who] of self
-        ask tm [ set work-id work# ]
+        let task# [who] of self
+        ask tm [
+          set task-id task#
+          set tasks-dw [tasks-dw] of self + 1
+        ]
         ;; SELECT TEAM FOR THIS TEAM MANAGER AND ASSIGN LINK EACHOTHER
         ask team [
           let id [who] of self
           create-links-with team with [who != id] [ set color orange ]
+          set team? false
         ]
         set t-s 1 ;; SET STATUS AS ACTIVE ONCE THE TASK IS ASSIGNED TO THE TEAM
         ;; REQUIRED CALCULATIONS OF ATTRIBUTES
@@ -272,6 +338,31 @@ to create-assign-team-tasks
         ask self [die]
         set loop? false
       ]
+    ]
+    set #tasks #tasks - 1
+  ]
+end
+
+;; FUNCTION FOR CREATING AND ASSIGNING OF TASKS TO INDIVIDUAL
+to create-assign-ind-tasks
+  let #tasks count employees with [role = 0 and task-id = -1]
+  while [#tasks != 0] [
+    let empl one-of employees with [role = 0 and task-id = -1]
+    ;; ASSIGN TASK TO THE ONE OF EMPLOYEES AVAILABLE
+    ;; SET POSITION OF THE TASK NEAR THE EMPLOYEE
+    ask (setup-task false) [
+      setxy ([xcor] of empl + 1 * (sin random 360)) ([ycor] of empl + 1 * (cos random 360))
+      create-link-with empl [set color yellow]
+      ;; ASSIGN TASK ID TO EMPLOYEE
+      let task# [who] of self
+      ask empl [
+        set task-id task#
+        set team? false
+        set tasks-dw [tasks-dw] of self + 1
+      ]
+      set t-s 1 ;; SET STATUS AS ACTIVE ONCE THE TASK IS ASSIGNED TO THE EMPLOYEE
+      ;; REQUIRED CALCULATIONS OF ATTRIBUTES
+      set p2 (individual-experience empl [difficulty] of self)
     ]
     set #tasks #tasks - 1
   ]
@@ -291,6 +382,16 @@ to-report team-experience [team t-d]
   report _e / count team
 end
 
+;; CALCULATION OF EPERIENCE OF AN EMPLOYEE
+to-report individual-experience [empl t-d]
+  let tdi (task-d-ind t-d)
+  ifelse tdi = 1 [report [e1] of empl]
+  [
+    ifelse tdi = 2 [report [e2] of empl]
+    [report [e3] of empl]
+  ]
+end
+
 ;; REPORTER FOR TASK DIFFICULTY INDEX
 to-report task-d-ind [t-d]
   if t-d >= 1 and t-d <= 33 [report 1]
@@ -298,22 +399,54 @@ to-report task-d-ind [t-d]
   if t-d >= 67 [report 3]
 end
 
+;; FUNCTION FOR CALCULATING AVERAGE TEAM SIZE AT EACH TIME STEP
+to calc-avg-team-size
+  set avg-team-size avg-team-size + (sum [count my-links with [color = white]] of employees with [role = 1]) / count employees with [role = 1]
+end
+
+;; FUNCTION TO ALLOCATE APPROPRIATE RESOURCES
+to allocate-resources
+  ask tasks with [t-s = 1 and count my-links with [color = green] = 0] [ ;; ACTIVE TASKS WITH NO ATTACHED RESOURCES
+    let rdi resource-dim-ind (count my-links with [color = yellow])
+    let resr resources with [count my-links with [color = green] = 0 and dimension = rdi]
+    if one-of resr != nobody [
+      let x [xcor] of self
+      let y [ycor] of self
+      create-link-with one-of resr [
+        set color green
+        ask end1 [ setxy (x + 1 * (sin random 360)) (y + 1 * (cos random 360)) ]
+      ]
+    ]
+  ]
+end
+
+;; REPORTER FOR REQUIRED RESOURCE DIMENSION INDEX
+to-report resource-dim-ind [team-size]
+  ifelse team-size = 1 [report 1] ;; INDIVIDUAL
+  [
+    ifelse team-size < avg-team-size [report 2] ;; SMALL TEAM SIZE
+    [report 3] ;; LARGE TEAM SIZE
+  ]
+end
+
 ;; FUNCTION FOR UPDATION OF TASKS
 to update-tasks
-  ask tasks with [any? my-links with [color = yellow]] [
-    let _task self
-    let t-c [team-c] of self
-    let t-d [difficulty] of self
-    set task-wl [difficulty] of self * (exp (alpha * [t-l] of self))
-    ask turtle-set [other-end] of my-links with [color = yellow] [
-      set w-c (tendency self _task) * [ability] of self ;; CALCULATION OF INDIVIDUAL WORK CONTRIBUTION
-      set t-c [team-c] of _task + [w-c] of self
-    ]
-    set team-c t-c
-    set p3 team-c / task-wl ;; PROBABILITY P3
-    ;; CHECK THE COMPLETION STATUS OF THE TASK
-    if [team-c] of self >= [task-wl] of self [ task-completion self t-d ]
+  ask tasks with [count my-links with [color = yellow] > 0] [
     set t-l t-l + 1
+    set task-wl [difficulty] of self * (exp (alpha * [t-l] of self))
+    if count my-links with [color = green] > 0 [
+      let _task self
+      let t-c [team-c] of self
+      let t-d [difficulty] of self
+      ask turtle-set [other-end] of my-links with [color = yellow] [
+        set w-c (tendency self _task) * [ability] of self ;; CALCULATION OF INDIVIDUAL WORK CONTRIBUTION
+        set t-c [team-c] of _task + [w-c] of self
+      ]
+      set team-c t-c
+      set p3 team-c / task-wl ;; PROBABILITY P3
+                              ;; CHECK THE COMPLETION STATUS OF THE TASK
+      if [team-c] of self >= [task-wl] of self [ task-completion self t-d ]
+    ]
   ]
 end
 
@@ -349,18 +482,40 @@ to task-completion [_task t-d]
   ask _task [
     ;; UPDATE ASSIGNED EMPLOYEES EXPERIENCE AND THEN UNASSIGN THEM FROM THE TASK
     ask turtle-set [other-end] of my-links with [color = yellow] [
+      set tasks-solved [tasks-solved] of self + 1
       ifelse (task-d-ind t-d) = 1 [ set e1 1 ]
       [
         ifelse (task-d-ind t-d) = 2 [ set e2 1 ]
         [ set e3 1 ]
       ]
-      set work-id -1
+      set task-id -1
       ;; REMOVE ALL LINKS AND MOVE THE EMPLOYEE
-      ask my-links [die]
+      ask my-links with [color = orange or color = white] [die]
       if [role] of self = 0 [ setxy random-xcor random-ycor ] ;; MOVE EMPLOYEES TO RANDOM POSITIONS AFTER TASK COMPLETION (NOT TEAM MANAGER)
+      set team? true
     ]
+    ask my-links [die]
+    set t-s 2
     die
   ]
+end
+
+;; FUNCTION FOR UPDATING DAYS OF WORK OF AN EMPLOYEE
+to update#days-worked
+  ask employees with [role = 0] [ set #days-worked [#days-worked] of self + 1 ]
+end
+
+;; FUNCTION FOR CALCULATING OPPORTUNITY VARIABLE OF ALL EMPLOYEES
+to calc-opportunity
+  let atf actual#teams-formed
+  ask employees with [role = 0] [
+    set opportunity (#teams-formed / atf) * ([#days-worked] of self / ticks)
+  ]
+end
+
+;; REPORTER FOR ACTUAL NUMBER OF TEAMS AN EMPLOYEE COULD HAVE FORMED OVERTIME
+to-report actual#teams-formed
+  report (sum ([#teams-formed * #days-worked] of employees with [role = 0]) / ticks) / count employees with [role = 0]
 end
 
 ;; FUNCTION FOR DISPLAYING ALL PLOTS
@@ -477,21 +632,6 @@ NIL
 NIL
 0
 
-SLIDER
-913
-451
-1085
-484
-fwd-speed
-fwd-speed
-0
-2
-0.1
-0.1
-1
-NIL
-HORIZONTAL
-
 BUTTON
 685
 95
@@ -562,6 +702,105 @@ PENS
 "achievement" 1.0 0 -11085214 true "" ""
 "affiliation" 1.0 0 -13345367 true "" ""
 "power" 1.0 0 -2674135 true "" ""
+
+MONITOR
+564
+457
+691
+498
+Average # tasks dealt
+(sum [tasks-dw] of employees with [role = 0]) / (count employees with [role = 0])
+5
+1
+10
+
+MONITOR
+696
+457
+830
+498
+Average # tasks solved
+(sum [tasks-solved] of employees with [role = 0]) / (count employees with [role = 0])
+5
+1
+10
+
+MONITOR
+564
+547
+718
+588
+Average team size overtime
+avg-team-size / ticks
+5
+1
+10
+
+MONITOR
+564
+498
+707
+539
+Total # tasks dealt with
+sum [tasks-dw] of employees with [role = 0]
+17
+1
+10
+
+MONITOR
+712
+498
+828
+539
+Total # tasks solved
+sum [tasks-solved] of employees with [role = 0]
+5
+1
+10
+
+MONITOR
+842
+457
+996
+498
+Total # resources currently
+count resources
+5
+1
+10
+
+MONITOR
+843
+503
+993
+544
+Total # resources attached
+count resources with [count my-links > 0]
+5
+1
+10
+
+MONITOR
+365
+457
+560
+498
+Total # tasks dealing with currently
+count tasks with [count my-links with [color = yellow] > 0]
+5
+1
+10
+
+MONITOR
+1006
+456
+1134
+497
+Average opportunity
+(sum [opportunity] of employees with [role = 0]) / count employees with [role = 0]
+5
+1
+10
 
 @#$#@#$#@
 ## WHAT IS IT?
