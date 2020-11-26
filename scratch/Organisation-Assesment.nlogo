@@ -14,6 +14,9 @@ globals [
   alpha ;; GLOBAL PENALTY PARAMETER USED IN CALCULATION OF TASK WORKLOAD
   ;; AVERAGE TEAM SIZE OVERTIME
   avg-team-size
+  ;; COUNT OF # TIMES NO TEAM WAS FORMED
+  no-team-count
+  avg-no-team-time ;; AVERAGE TIME IN WHICH ANY TEAM MANAGER WAS IDLE
 ]
 
 ;; BREEDS DECLERATION
@@ -25,14 +28,15 @@ breed [ resources resource ]
 employees-own [
   ;;
   #days-worked
-  tasks-assigned
   tasks-dw ;; NUMBER OF TASKS DEALT WITH (AS A TEAM FOR TEAM MANAGER)
   tasks-solved
+  avg-resources-delay
+  avg-task-life
   role
-  following
   team?
   task-id
   #teams-formed
+  no-team-time
   ;;
   opportunity
   commitment
@@ -43,10 +47,8 @@ employees-own [
   behaviour
   resign-prob
   fire-prob
-  team-satisfaction
+  team-satisfaction ;; DEPENDS ON THE WORK CONTRIBUTION OF OTHER TEAM MEMBERS WHEN WORKING WITH THE TEAM
   stress
-  ;;
-  missed-resources
   ;;
   s1
   s2
@@ -95,6 +97,12 @@ to setup-global
   set psi3 0
   set psi4 0
   set psi5 0.5
+  ;; CONSTANT VALUE OF ALPHA USED FOR CALCULATING WORKLOAD
+  set alpha (ln 0.5 / 14)
+  ;; SET AVERAGE TEAM SIZE (9.5 AS PER THE CURRENT SIMULATION)
+  set avg-team-size 10.7
+  set no-team-count 0 ;; INITIALIZING COUNT OF # NO TEAMS
+  set avg-no-team-time 0
 end
 
 ;; SETTING UP EMPLOYEES IN THE ENVIRONMENT
@@ -107,20 +115,21 @@ to setup-employees
     set size 1
     set shape "person"
     set #days-worked 0
-    set behaviour random-normal 0 0.08
+    set avg-resources-delay 0
+    set avg-task-life 0
+    set behaviour random-normal 0.5 0.2
     set resign-prob 0
-    set fire-prob random-float 0.1
-    set competence random-normal competence_mean 0.5
+    set fire-prob 0
+    set competence random-normal competence_mean competence-std
     set team-satisfaction random-normal 2.721769 1.093082
     set stress 0
     set commitment random-normal 2.729932 0.711561
-    set performance random-normal 3.153741 0.360824
+    ;; set performance random-normal 3.153741 0.360824
+    set performance 0
     set role 0 ;; REPRESENTS EMPLOYEE
     set team? true
-    set tasks-assigned 0
     set tasks-dw 0
     set tasks-solved 0
-    set missed-resources 0
     set task-id -1
     set #teams-formed 0
     ;; MOTIVE PROFILE DISTRIBUTION
@@ -145,6 +154,7 @@ to setup-employees
     set e3 0
   ]
 
+  ;; COMPUTING REQUIRED VALUES FOR TEAM MANAGERS VARIABLES
   let comp-emp mean [competence] of employees + standard-deviation [competence] of employees
   let comt-emp-m mean [commitment] of employees
   let comt-emp-s standard-deviation [commitment] of employees
@@ -156,9 +166,11 @@ to setup-employees
     set size 1
     set shape "person"
     set #days-worked 0
-    set behaviour random-normal 0.08 0.08
+    set #days-worked 0
+    set avg-resources-delay 0
+    set behaviour random-normal 0.5 0.2
     set resign-prob 0
-    set fire-prob random-float 0.1
+    set fire-prob 0
     set competence random-normal comp-emp 0.5
     set team-satisfaction 0
     set stress 0
@@ -166,10 +178,8 @@ to setup-employees
     set performance random-normal (perf-emp-m + perf-emp-s) perf-emp-s
     set role 1 ;; REPRESENTS TEAM MANAGER
     set team? true
-    set tasks-assigned 0
     set tasks-dw 0
     set tasks-solved 0
-    set missed-resources 0
     set task-id -1
     set #teams-formed 0
     ;; MOTIVE PROFILE DISTRIBUTION
@@ -207,7 +217,7 @@ end
 to setup-resources
   ;;
   ;; RESOURCES FOR TEAM WITH TEAM SIZE LESS THAN avg-team-size
-  create-resources #team-managers / 2 [
+  create-resources #team-managers / 2 - ceiling (#team-managers / avg-team-size) [
     setxy random-xcor random-ycor
     set shape "pentagon"
     set color green
@@ -225,7 +235,7 @@ to setup-resources
   ]
   ;;
   ;; RESOURCES FOR INDIVIDUALS
-  create-resources #employees - (#team-managers * 11) [
+  create-resources #employees - (#team-managers * avg-team-size) [
     setxy random-xcor random-ycor
     set shape "pentagon"
     set color green
@@ -261,22 +271,25 @@ to go
   create-assign-team-tasks
   ;; CREATION AND ASSIGNING OF INDIVIDUAL TASKS
   create-assign-ind-tasks
-  ;; CALCULATE AVERAGE TEAM SIZE AT EACH TIME STEP
-  calc-avg-team-size
   ;; ALLOCATION OF APPROPRIATE RESOURCES TO THE TASKS
   allocate-resources
-  ;; UPDATING TASKS AND EMPLOYEES ATTRIBUTES AT EACH TIME STEP
-  update-tasks
-  ;; PLOT ALL NEXESSARY VALUES
-  plots
 
   tick
 
   ;; FUNCTIONS TO BE RUN AFTER EVERY TICK
+  ;; UPDATING TASKS AND EMPLOYEES ATTRIBUTES AT EACH TIME STEP
+  update-tasks
   ;; UPDATING DAYS OF WORKED OF ALL EMPLOYEES
   update#days-worked
   ;; UPDATING OPPORTUNITY OF EVERY EMPLOYEE
   calc-opportunity
+  ;; UPDATING NO TEAM ATTRIBUTES
+  update-no-team-attrs
+  ;; CALCULATION OF EMPLOYEE PERFORMANCE (DETAILS ARE LISED AS COMMENTS IN FUNCTION)
+  calc-emp-performance
+  ;; PLOT ALL NEXESSARY VALUES
+  plots
+
 end
 
 ;; TEAM MANAGERS SELECTING THEIR TEAMS
@@ -298,9 +311,22 @@ to-report tm-select-teams [tm _task]
         set tasks-dw [tasks-dw] of self + 1
       ]
       set #teams-formed #teams-formed + 1
+      ;; CALCULATE AVERAGE TEAM SIZE FOR EACH TEAM FORMATION
+      set avg-team-size ( ((avg-team-size * ((sum [#teams-formed] of employees with [role = 1]) - 1)) + count team) / sum [#teams-formed] of employees with [role = 1] )
+      ;; CALCULATIONS OF NO TEAM TIME AND COUNT
+      set no-team-count no-team-count + 1
+      set avg-no-team-time ((avg-no-team-time * (no-team-count - 1)) + [no-team-time] of self) / no-team-count
+      set no-team-time 0
     ]
   ]
   report team
+end
+
+;; UPDATE NO TEAM TIME AND COUNT
+to update-no-team-attrs
+  ask employees with [role = 1 and team?] [
+    set no-team-time no-team-time + 1
+  ]
 end
 
 ;; CREATION AND ASSIGNING OF TASKS
@@ -399,11 +425,6 @@ to-report task-d-ind [t-d]
   if t-d >= 67 [report 3]
 end
 
-;; FUNCTION FOR CALCULATING AVERAGE TEAM SIZE AT EACH TIME STEP
-to calc-avg-team-size
-  set avg-team-size avg-team-size + (sum [count my-links with [color = white]] of employees with [role = 1]) / count employees with [role = 1]
-end
-
 ;; FUNCTION TO ALLOCATE APPROPRIATE RESOURCES
 to allocate-resources
   ask tasks with [t-s = 1 and count my-links with [color = green] = 0] [ ;; ACTIVE TASKS WITH NO ATTACHED RESOURCES
@@ -416,6 +437,11 @@ to allocate-resources
         set color green
         ask end1 [ setxy (x + 1 * (sin random 360)) (y + 1 * (cos random 360)) ]
       ]
+      ;; UPDATING AVERAGE RESOURCE DELAY FOR AN EMPLOYEE
+      let tl [t-l] of self
+      ask (turtle-set [other-end] of my-links with [color = yelLow]) with [color = yellow] [
+        set avg-resources-delay ((avg-resources-delay * (tasks-dw - 1)) + tl) / tasks-dw
+      ]
     ]
   ]
 end
@@ -424,7 +450,7 @@ end
 to-report resource-dim-ind [team-size]
   ifelse team-size = 1 [report 1] ;; INDIVIDUAL
   [
-    ifelse team-size < avg-team-size [report 2] ;; SMALL TEAM SIZE
+    ifelse (team-size - 1) < avg-team-size [report 2] ;; SMALL TEAM SIZE
     [report 3] ;; LARGE TEAM SIZE
   ]
 end
@@ -480,15 +506,24 @@ end
 ;; FUNCTION TO RUN AFTER A TASK COMPLETION
 to task-completion [_task t-d]
   ask _task [
+    let tl [t-l] of self
+    let sum-comp (sum [competence] of turtle-set [other-end] of my-links with [color = yellow])
+    let team-count count turtle-set [other-end] of my-links with [color = yellow]
+    let td [difficulty] of self
     ;; UPDATE ASSIGNED EMPLOYEES EXPERIENCE AND THEN UNASSIGN THEM FROM THE TASK
     ask turtle-set [other-end] of my-links with [color = yellow] [
       set tasks-solved [tasks-solved] of self + 1
+      set avg-task-life ((avg-task-life * ([tasks-dw] of self - 1)) + tl) / [tasks-dw] of self
       ifelse (task-d-ind t-d) = 1 [ set e1 1 ]
       [
         ifelse (task-d-ind t-d) = 2 [ set e2 1 ]
         [ set e3 1 ]
       ]
       set task-id -1
+      ;; CALCULATING COMPETENCE INCREASE FOR EACH EMPLOYEE BASED ON COMPETENCES OF OTHER TEAM MEMBERS
+      if any? my-links with [color = orange] and td > ([ability] of self * 20) [
+        set competence competence + ( ((sum-comp - [competence] of self) / (team-count - 1)) / 10 )
+      ]
       ;; REMOVE ALL LINKS AND MOVE THE EMPLOYEE
       ask my-links with [color = orange or color = white] [die]
       if [role] of self = 0 [ setxy random-xcor random-ycor ] ;; MOVE EMPLOYEES TO RANDOM POSITIONS AFTER TASK COMPLETION (NOT TEAM MANAGER)
@@ -498,6 +533,11 @@ to task-completion [_task t-d]
     set t-s 2
     die
   ]
+end
+
+;; REPORTS AVERAGE VALUE OF THE COMPETENCES OF A TEAM
+to-report avg-team-comp [team]
+  report (sum [competence] of team) / count team
 end
 
 ;; FUNCTION FOR UPDATING DAYS OF WORK OF AN EMPLOYEE
@@ -518,13 +558,67 @@ to-report actual#teams-formed
   report (sum ([#teams-formed * #days-worked] of employees with [role = 0]) / ticks) / count employees with [role = 0]
 end
 
+;; CALCULATING INDIVIDUAL PERFORMANCE
+to calc-emp-performance
+  ;; FORMULA FOR CALCULATING PERFORMANCE OF AN EMPLOYEE
+  ;; --capcity--
+  ;; performance = capacity * commitment (capcity = comptencies * resources * opportunity)
+  ;; COMPETENCE AND BEHAVIOUR ARE CONSIDERED TO CALCULATE COMPETENCIES
+  ;; AVEREAGE RESOURCES DELAY IS USED TO CALCULATE THE RESOURCES VALUE (MORE DELAY LESS VALUE)
+  ;; OPPORTUNITY IS CALCULATED ALREADY AT EACH TIME STEP
+  ;; --commitment--
+  ;; WROK CONTRIBUTION OF EACH EMPLOYEE AT EACH TIME STEP WHEN ATTACHED TO A TASK
+  let mc (sum [competence] of employees) / count employees
+  ;; TERMS USED FOR PLOTTING CAPACITY, COMMITMENT AND PERFORMANCE
+  let avg-cap 0
+  let avg-comt 0
+  ask employees with [tasks-solved > 0] [
+    let competencies ([competence] of self + [behaviour] of self)
+    let _resources 1 - ([avg-resources-delay] of self / [avg-task-life] of self)      ;; CAPACITY OF AN EMPLOYEE
+    set performance ( (competencies * _resources * [opportunity] of self) * [w-c] of self )
+    ;; CALCULATING TERMS FOR PLOTTING PURPOSE
+    set avg-cap avg-cap + (competencies * _resources * [opportunity] of self)
+    set avg-comt avg-comt + [w-c] of self
+  ]
+  ;; PLOT AVERAGE OF PERFORMANCE CALCULATED FOR ALL EMPLOYEES
+  set-current-plot "avg-performance"
+  set-current-plot-pen "avg-perf"
+  plot((sum [performance] of employees) / (count employees))
+  ;; PLOT AVERAGE CAPACITY
+  set-current-plot "avg-performance"
+  set-current-plot-pen "avg-cap"
+  plot(avg-cap / (count employees))
+  ;; PLOT AVERAGE OF COMMITMENT
+  set-current-plot "avg-performance"
+  set-current-plot-pen "avg-comt"
+  plot(avg-comt / (count employees))
+end
+
 ;; FUNCTION FOR DISPLAYING ALL PLOTS
 to plots
   ;; PLOT EMPLOYEES COUNT
   set-current-plot "#employees"
   set-current-plot-pen "count"
   plot count employees with [role = 0]
+  ;; PLOT AVERAGE TASKS SOLVED
+  if ticks mod 30 = 0 [
+    set-current-plot "average#tasks-solved"
+    set-current-plot-pen "avg-tasks-solved-count"
+    plot (sum [tasks-solved] of employees with [role = 0]) / (count employees with [role = 0])
+  ]
+  ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
+  set-current-plot "avg-avg-resource-delay"
+  set-current-plot-pen "avg-avg-resource-delay"
+  plot((sum [avg-resources-delay] of employees with [role = 0]) / count employees with [role = 0])
+  ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
+  set-current-plot "avg-avg-task-life"
+  set-current-plot-pen "avg-avg-task-life"
+  plot((sum [avg-task-life] of employees with [role = 0]) / count employees with [role = 0])
 end
+
+
+;; POINTS TO BE NOTED FOR FURTHUR WORK
+;; COMPETENCE OF NEWLY HIRED EMPLOYE SHOULD BE COMPUTED WITH MEAN AS (MEAN OF COMPETENCE OF ALL EMPLOYEES AT THE MOMENT) (TO MEET THE COMPANY LEVEL)
 @#$#@#$#@
 GRAPHICS-WINDOW
 772
@@ -647,7 +741,7 @@ NIL
 G
 NIL
 NIL
-1
+0
 
 SLIDER
 205
@@ -665,10 +759,10 @@ NIL
 HORIZONTAL
 
 PLOT
-562
+564
+150
+764
 300
-762
-450
 #employees
 ticks
 # employees
@@ -731,7 +825,7 @@ MONITOR
 718
 588
 Average team size overtime
-avg-team-size / ticks
+avg-team-size
 5
 1
 10
@@ -770,10 +864,10 @@ count resources
 10
 
 MONITOR
-843
-503
-993
-544
+842
+500
+992
+541
 Total # resources attached
 count resources with [count my-links > 0]
 5
@@ -801,6 +895,161 @@ Average opportunity
 5
 1
 10
+
+MONITOR
+842
+541
+954
+582
+#ind-resources idle
+count resources with [count my-links = 0 and dimension = 1]
+0
+1
+10
+
+PLOT
+564
+301
+764
+451
+average#tasks-solved
+ticks
+avg-tasks-solved
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"avg-tasks-solved-count" 1.0 0 -2674135 true "" ""
+
+PLOT
+1213
+297
+1413
+447
+avg-avg-resource-delay
+ticks
+avg-avg-resource-delay
+0.0
+10.0
+0.0
+5.0
+true
+false
+"" ""
+PENS
+"avg-avg-resource-delay" 1.0 0 -14439633 true "" ""
+
+MONITOR
+1213
+446
+1356
+487
+avg-avg-resources-delay
+(sum [avg-resources-delay] of employees with [role = 0]) / count employees with [role = 0]
+5
+1
+10
+
+MONITOR
+1212
+106
+1313
+147
+avg-avg-task-life
+(sum [avg-task-life] of employees with [role = 0]) / count employees with [role = 0]
+5
+1
+10
+
+PLOT
+1212
+145
+1412
+295
+avg-avg-task-life
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"avg-avg-task-life" 1.0 0 -13345367 true "" ""
+
+MONITOR
+952
+541
+1072
+582
+#team-resources idle
+count resources with [count my-links = 0 and dimension != 1]
+5
+1
+10
+
+MONITOR
+564
+587
+666
+628
+avg no team time
+avg-no-team-time
+5
+1
+10
+
+MONITOR
+242
+457
+348
+498
+mean competence
+(sum [competence] of employees with [role = 0]) / count employees with [role = 0]
+5
+1
+10
+
+PLOT
+195
+55
+557
+265
+avg-performance
+ticks
+avg-performace
+0.0
+10.0
+0.0
+3.0
+true
+true
+"" ""
+PENS
+"avg-perf" 1.0 0 -12895429 true "" ""
+"avg-cap" 1.0 0 -955883 true "" ""
+"avg-comt" 1.0 0 -612749 true "" ""
+
+SLIDER
+15
+126
+187
+159
+competence-std
+competence-std
+0
+1
+0.5
+0.01
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
