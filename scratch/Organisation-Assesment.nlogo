@@ -17,6 +17,9 @@ globals [
   ;; COUNT OF # TIMES NO TEAM WAS FORMED
   no-team-count
   avg-no-team-time ;; AVERAGE TIME IN WHICH ANY TEAM MANAGER WAS IDLE
+  ;; EMPLOYEE AGENT WHO IS SELECTED FOR PROMOTION
+  promote-emp
+  check-prom ;; BOOLEAN TO CHECK FOR PROMOTION
 ]
 
 ;; BREEDS DECLERATION
@@ -43,20 +46,21 @@ employees-own [
   performance
   ;; PERSONAL ATTRIBUTES
   ability
-  competence
-  behaviour
+  knowledge
   resign-prob
   fire-prob
   team-satisfaction ;; DEPENDS ON THE WORK CONTRIBUTION OF OTHER TEAM MEMBERS WHEN WORKING WITH THE TEAM
   stress
-  ;;
-  s1
-  s2
-  s3
-  w-c
-  e1
-  e2
-  e3
+  ;; MOTIVATOIN PARAMETERS
+  s1 ;; ACHIEVEMENT
+  s2 ;; AFFILIATION
+  s3 ;; POWER
+  w-c ;; WORK CONTRIBUTION
+  e1 ;; EXPERIENCE WITH EASIER TASKS
+  e2 ;; EXPERIENCE WITH MEDIUM LEVEL OF TASKS
+  e3 ;; EXPERIENCE WITH HARDER TASKS
+  ;; REPRESENTS THAT THIS EMPLOYEE CAN BE TEAM MANAGER
+  tm-prom-days
 ]
 tasks-own [
   difficulty
@@ -103,6 +107,8 @@ to setup-global
   set avg-team-size 10.7
   set no-team-count 0 ;; INITIALIZING COUNT OF # NO TEAMS
   set avg-no-team-time 0
+  set promote-emp nobody ;; INITIALIZE WITH NOBODY
+  set check-prom false
 end
 
 ;; SETTING UP EMPLOYEES IN THE ENVIRONMENT
@@ -117,14 +123,12 @@ to setup-employees
     set #days-worked 0
     set avg-resources-delay 0
     set avg-task-life 0
-    set behaviour random-normal 0.5 0.2
     set resign-prob 0
     set fire-prob 0
-    set competence random-normal competence_mean competence-std
-    set team-satisfaction random-normal 2.721769 1.093082
+    set knowledge random-normal knowledge_mean knowledge-std
+    set team-satisfaction 0
     set stress 0
     set commitment random-normal 2.729932 0.711561
-    ;; set performance random-normal 3.153741 0.360824
     set performance 0
     set role 0 ;; REPRESENTS EMPLOYEE
     set team? true
@@ -152,30 +156,28 @@ to setup-employees
     set e1 0
     set e2 0
     set e3 0
+    ;; NUMBER OF CONSECUTIVE DAYS AN EMPLOYEE CAN BE TEAM MANAGER
+    set tm-prom-days 0
   ]
 
   ;; COMPUTING REQUIRED VALUES FOR TEAM MANAGERS VARIABLES
-  let comp-emp mean [competence] of employees + standard-deviation [competence] of employees
+  let comp-emp mean [knowledge] of employees + standard-deviation [knowledge] of employees
   let comt-emp-m mean [commitment] of employees
   let comt-emp-s standard-deviation [commitment] of employees
-  let perf-emp-m mean [performance] of employees
-  let perf-emp-s standard-deviation [performance] of employees
   ;; SETTING UP TEAM MANAGERS
   create-employees #team-managers [
     set color white
     set size 1
     set shape "person"
     set #days-worked 0
-    set #days-worked 0
     set avg-resources-delay 0
-    set behaviour random-normal 0.5 0.2
     set resign-prob 0
     set fire-prob 0
-    set competence random-normal comp-emp 0.5
+    set knowledge random-normal comp-emp knowledge-std
     set team-satisfaction 0
     set stress 0
     set commitment random-normal (comt-emp-m + comt-emp-s) comt-emp-s
-    set performance random-normal (perf-emp-m + perf-emp-s) perf-emp-s
+    set performance random-normal 3.153741 0.360824
     set role 1 ;; REPRESENTS TEAM MANAGER
     set team? true
     set tasks-dw 0
@@ -197,20 +199,8 @@ to setup-employees
     set e2 1.0
     set e3 1.0
   ]
-
-  ;; SETTING UP TEAM MANAGERS POSITIONS
-  let t-x ceiling (#team-managers / 4)
-  let x ceiling (2 * max-pxcor) / (t-x + 1)
-  let y ceiling (2 * max-pycor) / 5
-  let i 1 ;; for itertion purpose
-  ask employees with [role = 1] [
-    setxy (x * i) - max-pxcor y - max-pycor
-    if i mod t-x = 0 [
-      set i 0
-      set y y + (2 * max-pycor) / 5
-    ]
-    set i i + 1
-  ]
+  ;; POSITIONING TEAM MANAGERS IN ENVIRONMENT
+  position-tm
 end
 
 ;; SETTING UP RESOURCES IN THE ENVIRONMENT
@@ -270,7 +260,7 @@ to go
   ;; CREATION AND ASSIGNING OF TEAM TASKS
   create-assign-team-tasks
   ;; CREATION AND ASSIGNING OF INDIVIDUAL TASKS
-  create-assign-ind-tasks
+  ;; create-assign-ind-tasks
   ;; ALLOCATION OF APPROPRIATE RESOURCES TO THE TASKS
   allocate-resources
 
@@ -287,6 +277,10 @@ to go
   update-no-team-attrs
   ;; CALCULATION OF EMPLOYEE PERFORMANCE (DETAILS ARE LISED AS COMMENTS IN FUNCTION)
   calc-emp-performance
+  ;; PROMOTION CHECK
+  emp-to-tm
+  ;; PROMOTES WHEN THE EMPLOYEE IS FREE FROM ALL TASKS
+  promote-when-free
   ;; PLOT ALL NEXESSARY VALUES
   plots
 
@@ -507,9 +501,10 @@ end
 to task-completion [_task t-d]
   ask _task [
     let tl [t-l] of self
-    let sum-comp (sum [competence] of turtle-set [other-end] of my-links with [color = yellow])
+    let sum-comp (sum [knowledge] of turtle-set [other-end] of my-links with [color = yellow])
     let team-count count turtle-set [other-end] of my-links with [color = yellow]
     let td [difficulty] of self
+    let tc [team-c] of self
     ;; UPDATE ASSIGNED EMPLOYEES EXPERIENCE AND THEN UNASSIGN THEM FROM THE TASK
     ask turtle-set [other-end] of my-links with [color = yellow] [
       set tasks-solved [tasks-solved] of self + 1
@@ -521,9 +516,15 @@ to task-completion [_task t-d]
       ]
       set task-id -1
       ;; CALCULATING COMPETENCE INCREASE FOR EACH EMPLOYEE BASED ON COMPETENCES OF OTHER TEAM MEMBERS
+      ;; AFTER COMPLETION OF EVERY TASK EACH EMPLOYEE WILL GAIN 10% OF AVERAGE COMPETENCE OF THE TEAM
       if any? my-links with [color = orange] and td > ([ability] of self * 20) [
-        set competence competence + ( ((sum-comp - [competence] of self) / (team-count - 1)) / 10 )
+        ;; set knowledge ( (knowledge * ([tasks-solved] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) )) / [tasks-solved] of self )
+        set knowledge knowledge + 0.02
+        set commitment ( (commitment * ([tasks-solved] of self - 1)) + ([w-c] of self / tc) ) / [tasks-solved] of self ;; CALCULATING AVERAGE OF OVERALL WORK CONTRIBUTION OF AN EMPLOYEE
       ]
+      ;; CALCULATING COMPETENCE FOR THE TEAM MANAGER
+      ;; INCREASE OF COMPETENCE OF TEAM MANAGER WILL BE 6.25% OF TEAM MEMBER'S
+      if role = 1 [ set knowledge (knowledge * ([#teams-formed] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) * (7 / 100) )) / [#teams-formed] of self ]
       ;; REMOVE ALL LINKS AND MOVE THE EMPLOYEE
       ask my-links with [color = orange or color = white] [die]
       if [role] of self = 0 [ setxy random-xcor random-ycor ] ;; MOVE EMPLOYEES TO RANDOM POSITIONS AFTER TASK COMPLETION (NOT TEAM MANAGER)
@@ -537,7 +538,7 @@ end
 
 ;; REPORTS AVERAGE VALUE OF THE COMPETENCES OF A TEAM
 to-report avg-team-comp [team]
-  report (sum [competence] of team) / count team
+  report (sum [knowledge] of team) / count team
 end
 
 ;; FUNCTION FOR UPDATING DAYS OF WORK OF AN EMPLOYEE
@@ -547,18 +548,25 @@ end
 
 ;; FUNCTION FOR CALCULATING OPPORTUNITY VARIABLE OF ALL EMPLOYEES
 to calc-opportunity
-  let atf actual#teams-formed
+  let atf avg#teams-formed ;; AVERAGE # TEAMS FORMED
+  let adw avg#days-worked  ;; AVERAGE # DAYS WORKED
   ask employees with [role = 0] [
-    set opportunity (#teams-formed / atf) * ([#days-worked] of self / ticks)
+    set opportunity #teams-formed / ((#days-worked / adw) * atf) ;; #TEAMS FORMED / ACTUAL #TEAMS COULD HAVE FORMED
   ]
 end
 
+;; REPORTS AVERAGE DAYS OF EMPLOYEES WORK
+to-report avg#days-worked
+  report (sum [#days-worked] of employees with [role = 0]) / count employees with [role = 0]
+end
+
 ;; REPORTER FOR ACTUAL NUMBER OF TEAMS AN EMPLOYEE COULD HAVE FORMED OVERTIME
-to-report actual#teams-formed
-  report (sum ([#teams-formed * #days-worked] of employees with [role = 0]) / ticks) / count employees with [role = 0]
+to-report avg#teams-formed
+  report (sum ([#teams-formed] of employees with [role = 0])) / count employees with [role = 0]
 end
 
 ;; CALCULATING INDIVIDUAL PERFORMANCE
+;; THE FORMULA CONSIDERED FROM (https://www.opm.gov/policy-data-oversight/performance-management/performance-management-cycle/developing/formula-for-maximizing-performance/)
 to calc-emp-performance
   ;; FORMULA FOR CALCULATING PERFORMANCE OF AN EMPLOYEE
   ;; --capcity--
@@ -568,30 +576,163 @@ to calc-emp-performance
   ;; OPPORTUNITY IS CALCULATED ALREADY AT EACH TIME STEP
   ;; --commitment--
   ;; WROK CONTRIBUTION OF EACH EMPLOYEE AT EACH TIME STEP WHEN ATTACHED TO A TASK
-  let mc (sum [competence] of employees) / count employees
+  let mc (sum [knowledge] of employees) / count employees
   ;; TERMS USED FOR PLOTTING CAPACITY, COMMITMENT AND PERFORMANCE
   let avg-cap 0
   let avg-comt 0
   ask employees with [tasks-solved > 0] [
-    let competencies ([competence] of self + [behaviour] of self)
+    let competencies [knowledge] of self                                              ;; TERMS USED FOR CALCULATING
     let _resources 1 - ([avg-resources-delay] of self / [avg-task-life] of self)      ;; CAPACITY OF AN EMPLOYEE
-    set performance ( (competencies * _resources * [opportunity] of self) * [w-c] of self )
+    set performance ( (competencies * _resources * [opportunity] of self) * [commitment] of self )
     ;; CALCULATING TERMS FOR PLOTTING PURPOSE
     set avg-cap avg-cap + (competencies * _resources * [opportunity] of self)
-    set avg-comt avg-comt + [w-c] of self
+    set avg-comt avg-comt + [commitment] of self
   ]
   ;; PLOT AVERAGE OF PERFORMANCE CALCULATED FOR ALL EMPLOYEES
   set-current-plot "avg-performance"
   set-current-plot-pen "avg-perf"
-  plot((sum [performance] of employees) / (count employees))
+  plot( sum [performance] of employees with [role = 0 and #days-worked > perf-calc-days] / (count employees) )
   ;; PLOT AVERAGE CAPACITY
-  set-current-plot "avg-performance"
-  set-current-plot-pen "avg-cap"
-  plot(avg-cap / (count employees))
+  ;;set-current-plot-pen "avg-cap"
+  ;;plot(avg-cap / (count employees))
   ;; PLOT AVERAGE OF COMMITMENT
-  set-current-plot "avg-performance"
-  set-current-plot-pen "avg-comt"
-  plot(avg-comt / (count employees))
+  ;;set-current-plot-pen "avg-comt"
+  ;;plot(avg-comt / (count employees))
+end
+
+;; FINDING ANY EMPLOYEE CAN BE TEAM MANAGER
+to emp-to-tm
+  if ticks mod (365 * 3) = 0 [ set check-prom true ]
+  if check-prom and promote-emp = nobody [
+    ;; UPDATES tm-prom-days VARIABLE AT EACH TIME STEP
+    update-tmpd-var
+    ;; PROMOTE EMPLOYEE WITH MAX COMMITMENT
+    set-promote-emp
+  ]
+end
+
+;; FUNCTION FOR UPDATING tm-prom-days VARIABLE
+to update-tmpd-var
+  ask employees with [role = 0] [
+    ifelse knowledge >= ((sum [knowledge] of employees with [role = 1]) / count employees with [role = 1]) [
+      set tm-prom-days tm-prom-days + 1
+    ][ set tm-prom-days 0 ]
+  ]
+end
+
+;; FUNCTION FOR PROMOTING AN EMPLOYEE WITH MAX COMMITMENT AMONG ALL
+to set-promote-emp
+  if any? employees with [role = 0 and tm-prom-days > 14] [
+    set promote-emp max-one-of (employees with [role = 0 and tm-prom-days > 14]) [commitment]
+    set check-prom false
+  ]
+end
+
+;; FUNCTION FOR PROMOTING EMPLOYEE ONCE FREE
+to promote-when-free
+  if promote-emp != nobody[
+    ask promote-emp [
+      if count my-links = 0 [
+        set role 1
+        set color white
+        set s1 2.0
+        set s2 2.0
+        set s3 2.0
+        ifelse random-float 1 < psi3 [ set ability 3 ]
+        [
+          ifelse random-float 1 < psi4 [ set ability 4 ]
+          [ set ability 5 ]
+        ]
+        ;; UPDATING POSITIONS OF TEAM MANAGERS IN SIMULATION
+        ;; position-tm
+        set promote-emp nobody
+        ;; HIRE NEW EMPLOYEES
+        hire-employees avg-team-size
+      ]
+    ]
+  ]
+end
+
+;; FUNCTION FOR POSITIONING AND UPDATING ALL TEAM MANAGERS IN THE ENVIRONMENT
+to position-tm
+  ;; SETTING UP TEAM MANAGERS POSITIONS
+  let t-x ceiling (count employees with [role = 1] / 4)
+  let x ceiling (2 * max-pxcor) / (t-x + 1)
+  let y ceiling (2 * max-pycor) / 5
+  let i 1 ;; for itertion purpose
+  ask employees with [role = 1] [
+    setxy (x * i) - max-pxcor y - max-pycor
+    if i mod t-x = 0 [
+      set i 0
+      set y y + (2 * max-pycor) / 5
+    ]
+    set i i + 1
+  ]
+end
+
+;; FUNCTION FOR HIRING NEW EMPLOYEES
+to hire-employees [emp-count]
+  ask one-of employees with [role = 0] [
+    let knowl-emp mean [knowledge] of employees - standard-deviation [knowledge] of employees
+    hatch avg-team-size / 2 [
+      setxy random-xcor random-ycor
+      set knowledge random-normal knowl-emp knowledge-std
+      set #days-worked 0
+      set avg-resources-delay 0
+      set avg-task-life 0
+      set resign-prob 0
+      set fire-prob 0
+      set commitment random-normal 2.729932 0.711561
+      set performance 0
+      set team? true
+      set tasks-dw 0
+      set tasks-solved 0
+      set task-id -1
+      set #teams-formed 0
+      ;; MOTIVE PROFILE DISTRIBUTION
+      ifelse random-float 1 < gamma1 [ set s1 2.0 ] [ set s1 1.0 ]
+      ifelse random-float 1 < gamma2 [ set s2 2.0 ] [ set s2 1.0 ]
+      ifelse random-float 1 < gamma3 [ set s3 2.0 ] [ set s3 1.0 ]
+      ;; ABILITY
+      ifelse random-float 1 < psi1 [ set ability 1 ]
+      [
+        ifelse random-float 1 < psi2 [ set ability 2 ]
+        [
+          ifelse random-float 1 < psi3 [ set ability 3 ]
+          [
+            ifelse random-float 1 < psi4 [ set ability 4 ]
+            [ set ability 5 ]
+          ]
+        ]
+      ]
+      ;; EXPERIENCE VARIABLES (EASY, MEDIUM, HARD) TASKS
+      set e1 0
+      set e2 0
+      set e3 0
+      ;; NUMBER OF CONSECUTIVE DAYS AN EMPLOYEE CAN BE TEAM MANAGER
+      set tm-prom-days 0
+    ]
+  ]
+  gen-new-resources
+end
+
+;; GENERATE NEW RESOURCES
+to gen-new-resources
+  ;; GENERATE REQUIRED NEW RESOURCES OF DIMENSION 2
+  let rc ( (count employees with [role = 1] / 2) - ceiling (count employees with [role = 1] / avg-team-size) ) - (count resources with [dimension = 2])
+  ask one-of resources with [dimension = 2] [
+    hatch rc [ setxy random-xcor random-ycor ]
+  ]
+  ;; GENERATE REQUIRED NEW RESOURCES OF DIMENSION 3
+  set rc ( (count employees with [role = 1]) - count resources with [dimension = 2] ) - (count resources with [dimension = 3])
+  ask one-of resources with [dimension = 3] [
+    hatch rc [ setxy random-xcor random-ycor ]
+  ]
+  ;; GENERATE REQUIRED NEW RESOURCES OF DIMENSION 1
+  ;;set rc ( (count employees with [role = 0]) - (count employees with [role = 1] * avg-team-size) ) - (count resources with [dimension = 1])
+  ;;ask one-of resources with [dimension = 1] [
+  ;;  hatch rc [ setxy random-xcor random-ycor ]
+  ;;]
 end
 
 ;; FUNCTION FOR DISPLAYING ALL PLOTS
@@ -656,7 +797,7 @@ SLIDER
 #employees
 0
 500
-300.0
+100.0
 1
 1
 NIL
@@ -671,7 +812,7 @@ SLIDER
 #team-managers
 0
 20
-20.0
+10.0
 1
 1
 NIL
@@ -682,8 +823,8 @@ SLIDER
 94
 187
 127
-competence_mean
-competence_mean
+knowledge_mean
+knowledge_mean
 0
 3
 3.0
@@ -1011,7 +1152,7 @@ MONITOR
 348
 498
 mean competence
-(sum [competence] of employees with [role = 0]) / count employees with [role = 0]
+(sum [knowledge] of employees with [role = 0]) / count employees with [role = 0]
 5
 1
 10
@@ -1029,26 +1170,56 @@ avg-performace
 0.0
 3.0
 true
-true
+false
 "" ""
 PENS
 "avg-perf" 1.0 0 -12895429 true "" ""
-"avg-cap" 1.0 0 -955883 true "" ""
-"avg-comt" 1.0 0 -612749 true "" ""
+"avg-cap" 1.0 0 -7500403 true "" ""
+"avg-comt" 1.0 0 -2674135 true "" ""
 
 SLIDER
 15
 126
 187
 159
-competence-std
-competence-std
+knowledge-std
+knowledge-std
 0
 1
 0.5
 0.01
 1
 NIL
+HORIZONTAL
+
+SLIDER
+385
+22
+557
+55
+performance-const
+performance-const
+0
+1
+0.05
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+15
+162
+187
+195
+perf-calc-days
+perf-calc-days
+0
+30
+14.0
+1
+1
+days
 HORIZONTAL
 
 @#$#@#$#@
