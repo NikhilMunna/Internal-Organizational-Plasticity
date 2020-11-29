@@ -207,7 +207,7 @@ end
 to setup-resources
   ;;
   ;; RESOURCES FOR TEAM WITH TEAM SIZE LESS THAN avg-team-size
-  create-resources #team-managers / 2 - ceiling (#team-managers / avg-team-size) [
+  create-resources 1 + ceiling #team-managers / 2 - (#team-managers / avg-team-size) [
     setxy random-xcor random-ycor
     set shape "pentagon"
     set color green
@@ -216,7 +216,7 @@ to setup-resources
   ]
   ;;
   ;; RESOURCES FOR TEAM WITH TEAM SIZE GREATER THAN avg-team-size
-  create-resources #team-managers - count resources [
+  create-resources 1 + #team-managers - count resources [
     setxy random-xcor random-ycor
     set shape "pentagon"
     set color green
@@ -225,13 +225,13 @@ to setup-resources
   ]
   ;;
   ;; RESOURCES FOR INDIVIDUALS
-  create-resources #employees - (#team-managers * avg-team-size) [
-    setxy random-xcor random-ycor
-    set shape "pentagon"
-    set color green
-    set size 0.5
-    set dimension 1
-  ]
+  ;;create-resources #employees - (#team-managers * avg-team-size) [
+  ;;  setxy random-xcor random-ycor
+  ;;  set shape "pentagon"
+  ;;  set color green
+  ;;  set size 0.5
+  ;;  set dimension 1
+  ;;]
 end
 
 ;; SETTING UP A SINGLE TASK
@@ -245,7 +245,7 @@ to-report setup-task [_team?]
     [set difficulty (random 33) + 1] ;; FOR INDIVIDUAL
     set t-s 0
     set t-l 0
-    ifelse _team? [set #w-n min-team-size + ([difficulty] of self / 10)] ;; FOR TEAM
+    ifelse _team? [set #w-n min-team-size + ([difficulty] of self / 25)] ;; FOR TEAM
     [set #w-n 1] ;; FOR INDIVIDUAL
     set p1 (100 - [difficulty] of self) / 100 ;; TASK'S PROBABILITY OF SUCCESS BASED ON THE DIFFICULTY VALUE
     set task-wl [difficulty] of self * (exp alpha * [t-l] of self)
@@ -276,7 +276,7 @@ to go
   ;; UPDATING NO TEAM ATTRIBUTES
   update-no-team-attrs
   ;; CALCULATION OF EMPLOYEE PERFORMANCE (DETAILS ARE LISED AS COMMENTS IN FUNCTION)
-  calc-emp-performance
+  ;; calc-emp-performance
   ;; PROMOTION CHECK
   emp-to-tm
   ;; PROMOTES WHEN THE EMPLOYEE IS FREE FROM ALL TASKS
@@ -328,7 +328,7 @@ to create-assign-team-tasks
   let loop? true
   let #tasks count employees with [role = 1 and task-id = -1]
   while [loop? and #tasks != 0] [
-    let tm one-of employees with [role = 1 and task-id = -1]
+    let tm max-one-of (employees with [role = 1 and task-id = -1]) [no-team-time]
     ;; ASSIGN TASK TO THE TEAM MANAGER
     ;; SET POSITION OF THE TASK NEAR THE TEAM
     let x [xcor] of tm
@@ -508,7 +508,7 @@ to task-completion [_task t-d]
     ;; UPDATE ASSIGNED EMPLOYEES EXPERIENCE AND THEN UNASSIGN THEM FROM THE TASK
     ask turtle-set [other-end] of my-links with [color = yellow] [
       set tasks-solved [tasks-solved] of self + 1
-      set avg-task-life ((avg-task-life * ([tasks-dw] of self - 1)) + tl) / [tasks-dw] of self
+      set avg-task-life ((avg-task-life * ([tasks-solved] of self - 1)) + tl) / [tasks-solved] of self
       ifelse (task-d-ind t-d) = 1 [ set e1 1 ]
       [
         ifelse (task-d-ind t-d) = 2 [ set e2 1 ]
@@ -518,17 +518,22 @@ to task-completion [_task t-d]
       ;; CALCULATING COMPETENCE INCREASE FOR EACH EMPLOYEE BASED ON COMPETENCES OF OTHER TEAM MEMBERS
       ;; AFTER COMPLETION OF EVERY TASK EACH EMPLOYEE WILL GAIN 10% OF AVERAGE COMPETENCE OF THE TEAM
       if any? my-links with [color = orange] and td > ([ability] of self * 20) [
-        ;; set knowledge ( (knowledge * ([tasks-solved] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) )) / [tasks-solved] of self )
-        set knowledge knowledge + 0.02
+        set knowledge ( (knowledge * ([tasks-solved] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) ) ) / [tasks-solved] of self )
+        ;; set knowledge knowledge + ( (sum-comp - [knowledge] of self) / (team-count - 1) ) * (10 / 100)
+        ;; set knowledge knowledge + 0.02
         set commitment ( (commitment * ([tasks-solved] of self - 1)) + ([w-c] of self / tc) ) / [tasks-solved] of self ;; CALCULATING AVERAGE OF OVERALL WORK CONTRIBUTION OF AN EMPLOYEE
       ]
       ;; CALCULATING COMPETENCE FOR THE TEAM MANAGER
       ;; INCREASE OF COMPETENCE OF TEAM MANAGER WILL BE 6.25% OF TEAM MEMBER'S
-      if role = 1 [ set knowledge (knowledge * ([#teams-formed] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) * (7 / 100) )) / [#teams-formed] of self ]
+      if role = 1 [
+        set knowledge (knowledge * ([#teams-formed] of self - 1) + ( knowledge + ((sum-comp - [knowledge] of self) / (team-count - 1)) * (1 / 100) )) / [#teams-formed] of self
+        ;; set knowledge knowledge + ( (sum-comp - [knowledge] of self) / (team-count - 1) ) * (5 / 100)
+      ]
       ;; REMOVE ALL LINKS AND MOVE THE EMPLOYEE
       ask my-links with [color = orange or color = white] [die]
       if [role] of self = 0 [ setxy random-xcor random-ycor ] ;; MOVE EMPLOYEES TO RANDOM POSITIONS AFTER TASK COMPLETION (NOT TEAM MANAGER)
       set team? true
+      calc-emp-performance self
     ]
     ask my-links [die]
     set t-s 2
@@ -567,7 +572,7 @@ end
 
 ;; CALCULATING INDIVIDUAL PERFORMANCE
 ;; THE FORMULA CONSIDERED FROM (https://www.opm.gov/policy-data-oversight/performance-management/performance-management-cycle/developing/formula-for-maximizing-performance/)
-to calc-emp-performance
+to calc-emp-performance [empl]
   ;; FORMULA FOR CALCULATING PERFORMANCE OF AN EMPLOYEE
   ;; --capcity--
   ;; performance = capacity * commitment (capcity = comptencies * resources * opportunity)
@@ -578,20 +583,16 @@ to calc-emp-performance
   ;; WROK CONTRIBUTION OF EACH EMPLOYEE AT EACH TIME STEP WHEN ATTACHED TO A TASK
   let mc (sum [knowledge] of employees) / count employees
   ;; TERMS USED FOR PLOTTING CAPACITY, COMMITMENT AND PERFORMANCE
-  let avg-cap 0
-  let avg-comt 0
-  ask employees with [tasks-solved > 0] [
-    let competencies [knowledge] of self                                              ;; TERMS USED FOR CALCULATING
-    let _resources 1 - ([avg-resources-delay] of self / [avg-task-life] of self)      ;; CAPACITY OF AN EMPLOYEE
+  ;; let avg-cap 0
+  ;; let avg-comt 0
+  ask empl [
+    let competencies [knowledge] of self                                                  ;; TERMS USED FOR CALCULATING
+    let _resources 1 - ( ([avg-resources-delay] of self / [avg-task-life] of self) / 10 )      ;; CAPACITY OF AN EMPLOYEE
     set performance ( (competencies * _resources * [opportunity] of self) * [commitment] of self )
     ;; CALCULATING TERMS FOR PLOTTING PURPOSE
-    set avg-cap avg-cap + (competencies * _resources * [opportunity] of self)
-    set avg-comt avg-comt + [commitment] of self
+    ;; set avg-cap avg-cap + (competencies * _resources * [opportunity] of self)
+    ;; set avg-comt avg-comt + [commitment] of self
   ]
-  ;; PLOT AVERAGE OF PERFORMANCE CALCULATED FOR ALL EMPLOYEES
-  set-current-plot "avg-performance"
-  set-current-plot-pen "avg-perf"
-  plot( sum [performance] of employees with [role = 0 and #days-worked > perf-calc-days] / (count employees) )
   ;; PLOT AVERAGE CAPACITY
   ;;set-current-plot-pen "avg-cap"
   ;;plot(avg-cap / (count employees))
@@ -647,7 +648,7 @@ to promote-when-free
         ;; position-tm
         set promote-emp nobody
         ;; HIRE NEW EMPLOYEES
-        hire-employees avg-team-size
+        hire-employees ( (avg-team-size / 2) + max (list 0 ((count employees with [role = 1] * avg-team-size) - count employees with [role = 0])) )
       ]
     ]
   ]
@@ -673,8 +674,8 @@ end
 ;; FUNCTION FOR HIRING NEW EMPLOYEES
 to hire-employees [emp-count]
   ask one-of employees with [role = 0] [
-    let knowl-emp mean [knowledge] of employees - standard-deviation [knowledge] of employees
-    hatch avg-team-size / 2 [
+    let knowl-emp mean [knowledge] of employees
+    hatch avg-team-size [
       setxy random-xcor random-ycor
       set knowledge random-normal knowl-emp knowledge-std
       set #days-worked 0
@@ -741,20 +742,30 @@ to plots
   set-current-plot "#employees"
   set-current-plot-pen "count"
   plot count employees with [role = 0]
-  ;; PLOT AVERAGE TASKS SOLVED
-  if ticks mod 30 = 0 [
-    set-current-plot "average#tasks-solved"
-    set-current-plot-pen "avg-tasks-solved-count"
-    plot (sum [tasks-solved] of employees with [role = 0]) / (count employees with [role = 0])
+  ;;
+  let empls employees with [role = 0 and #days-worked > perf-calc-days]
+  if count employees with [role = 0 and #days-worked > perf-calc-days] > 0 [
+    ;; PLOT AVERAGE TASKS SOLVED
+    if ticks mod 30 = 0 [
+      set-current-plot "average#tasks-solved"
+      set-current-plot-pen "avg-tasks-solved-count"
+      plot (sum [tasks-solved] of empls) / (count empls)
+    ]
+    ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
+    set-current-plot "avg-avg-resource-delay"
+    set-current-plot-pen "avg-avg-resource-delay"
+    plot((sum [avg-resources-delay] of empls) / count empls)
+    ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
+    set-current-plot "avg-avg-task-life"
+    set-current-plot-pen "avg-avg-task-life"
+    plot((sum [avg-task-life] of empls) / count empls)
+    ;; PLOT AVERAGE OF PERFORMANCE CALCULATED FOR ALL EMPLOYEES
+    if ticks mod 365 = 0 [
+      set-current-plot "avg-performance"
+      set-current-plot-pen "avg-perf"
+      plot( mean [performance] of empls )
+    ]
   ]
-  ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
-  set-current-plot "avg-avg-resource-delay"
-  set-current-plot-pen "avg-avg-resource-delay"
-  plot((sum [avg-resources-delay] of employees with [role = 0]) / count employees with [role = 0])
-  ;; PLOT AVERAGE OF TOTAT OF AVERAGE OF RESOURCES DELAY OF EACH EMPLOYEE
-  set-current-plot "avg-avg-task-life"
-  set-current-plot-pen "avg-avg-task-life"
-  plot((sum [avg-task-life] of employees with [role = 0]) / count employees with [role = 0])
 end
 
 
@@ -797,7 +808,7 @@ SLIDER
 #employees
 0
 500
-100.0
+20.0
 1
 1
 NIL
@@ -812,7 +823,7 @@ SLIDER
 #team-managers
 0
 20
-10.0
+2.0
 1
 1
 NIL
@@ -893,7 +904,7 @@ min-team-size
 min-team-size
 0
 10
-5.0
+4.0
 1
 1
 NIL
@@ -1216,7 +1227,7 @@ perf-calc-days
 perf-calc-days
 0
 30
-14.0
+30.0
 1
 1
 days
